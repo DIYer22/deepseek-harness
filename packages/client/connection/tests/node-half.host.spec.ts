@@ -237,12 +237,12 @@ describe('connection node half', () => {
     }
   })
 
-  it('uses the TLS default port for markerless exact-authority grants', async () => {
+  it('sends every authority to authentication regardless of trustedHosts', async () => {
     const { connection, dispose } = await mounted({ trustedHosts: ['tls.example:443', 'plain.example:80'] }, 'https:')
     try {
       expect(connection.requestRejection(fakeRequest({ host: 'tls.example' }))).toBe(401)
-      expect(connection.requestRejection(fakeRequest({ host: 'plain.example' }))).toBe(403)
-      expect(connection.requestRejection(fakeRequest({ host: 'tls.example:444' }))).toBe(403)
+      expect(connection.requestRejection(fakeRequest({ host: 'plain.example' }))).toBe(401)
+      expect(connection.requestRejection(fakeRequest({ host: 'tls.example:444' }))).toBe(401)
     } finally {
       await dispose()
     }
@@ -355,14 +355,21 @@ describe('connection node half', () => {
     expect(upgrades).toHaveLength(0)
   })
 
-  it('refuses an untrusted Host on any /api path before the bridge runs', async () => {
-    const { routes, dispose } = await mounted()
-    const { response, state } = fakeResponse()
+  it('admits any Host, Origin, and initiator that carries the login cookie', async () => {
+    const { routes, connection, dispose } = await mounted()
+    const anonymous = fakeResponse()
     await routes[0]!.handler(fakeRequest({
       host: 'harness.example', origin: 'http://harness.example', 'sec-fetch-site': 'same-origin',
-    }), response)
-    expect(state.status).toBe(403)
-    expect(state.body).toBe('forbidden')
+    }), anonymous.response)
+    expect(anonymous.state).toMatchObject({ status: 401, body: 'unauthorized' })
+    const signedIn = fakeResponse()
+    await routes[0]!.handler(fakeRequest({
+      host: 'harness.example',
+      origin: 'http://elsewhere.example',
+      'sec-fetch-site': 'cross-site',
+      cookie: browserCookie(connection, 'harness.example'),
+    }), signedIn.response)
+    expect(signedIn.state.status).toBe(404)
     await dispose()
   })
 
@@ -537,7 +544,7 @@ describe('connection node half', () => {
 
     const denied = fakeResponse()
     await route.handler(fakePost({ host: 'other.example' }, '/api/goals/create', request), denied.response)
-    expect(denied.state).toMatchObject({ status: 403, body: 'forbidden' })
+    expect(denied.state).toMatchObject({ status: 401, body: 'unauthorized' })
     expect(calls).toHaveLength(1)
 
     const unclaimed = fakeResponse()
@@ -569,7 +576,7 @@ describe('connection node half', () => {
     await fiber.dispose()
   })
 
-  it('admits every trusted, authenticated request as the owner browser Peer and hands each call that Peer', async () => {
+  it('admits every authenticated request as the owner browser Peer and hands each call that Peer', async () => {
     const { connection, routes, dispose } = await mounted({ trustedHosts: ['harness.example'] })
     const peers: PeerScope[] = []
     const remove = connection.rpc.intercept(
@@ -580,7 +587,7 @@ describe('connection node half', () => {
         return { ok: true, value: null }
       },
     )
-    expect(connection.admit(fakeRequest({ host: 'other.example' }))).toEqual({ rejection: 403 })
+    expect(connection.admit(fakeRequest({ host: 'other.example' }))).toEqual({ rejection: 401 })
     expect(connection.admit(fakeRequest({ host: '127.0.0.1:3080' }))).toEqual({ rejection: 401 })
     const cookie = browserCookie(connection, '127.0.0.1:3080')
     expect(connection.admit(fakeRequest({ host: '127.0.0.1:3080', cookie }))).toEqual({ peer: connection.browserPeer })
@@ -611,7 +618,7 @@ describe('connection node half', () => {
     await dispose()
   })
 
-  it('applies the configured trust fence and JSON envelope checks to generic channels', async () => {
+  it('applies authentication and JSON envelope checks to generic channels', async () => {
     const ctx = new Context()
     const routes: WebRoute[] = []
     provideBrowserCredentials(ctx)
@@ -631,7 +638,7 @@ describe('connection node half', () => {
 
     const denied = fakeResponse()
     await route.handler(fakePost({ host: 'other.example' }, '/rpc/goals/create', {}), denied.response)
-    expect(denied.state).toMatchObject({ status: 403, body: 'forbidden' })
+    expect(denied.state).toMatchObject({ status: 401, body: 'unauthorized' })
 
     const unauthenticated = fakeResponse()
     await route.handler(fakePost({ host: 'harness.example' }, '/rpc/goals/create', {}), unauthenticated.response)
@@ -744,7 +751,7 @@ describe('operator-scoped connect', () => {
     } finally { await host.dispose() }
   })
 
-  it('refuses invalid declarations, authentication, and untrusted connect requests without a cookie', async () => {
+  it('refuses invalid declarations and authentication without a cookie, from any Host or Origin', async () => {
     const host = await mounted()
     try {
       for (const query of ['&interactions=observe', '&interactions=', '&interactions=none&interactions=answer']) {
@@ -753,7 +760,7 @@ describe('operator-scoped connect', () => {
         expect(result.cookie).toBe('')
       }
       for (const headers of [{ host: 'untrusted.example' }, { origin: 'http://untrusted.example' }]) {
-        expect((await connect(host, '', headers)).state.status).toBe(403)
+        expect((await connect(host, '', headers)).state.status).toBe(302)
       }
       const route = host.routes.find(route => route.path === '/connect')!
       for (const request of [
@@ -927,8 +934,8 @@ describe('connection node half over a real HTTP server', () => {
   }
 
   it('requires authentication uniformly over a real HTTP request', async () => {
-    // A real IncomingMessage pins the exploit boundary: a client-controlled
-    // Host naming loopback passes the rebinding fence but never authenticates.
+    // A real IncomingMessage pins the exploit boundary: any client-controlled
+    // Host reaches authentication, and none authenticates without its cookie.
     const { routes, connection, dispose } = await mounted({ trustedHosts: ['harness.example'] })
     const { port, close } = await serve(routes)
     try {
@@ -943,7 +950,10 @@ describe('connection node half over a real HTTP server', () => {
         expect([method, await call(port, method, 'localhost')]).toEqual([method, 401])
         expect([method, await call(port, method, 'harness.example')]).toEqual([method, 401])
       }
-      expect(await call(port, 'settings/openSettingsDocument', 'other.example')).toBe(403)
+      expect(await call(port, 'settings/openSettingsDocument', 'other.example')).toBe(401)
+      expect(await call(
+        port, 'settings/openSettingsDocument', 'other.example', browserCookie(connection, 'harness.example'),
+      )).toBe(401)
 
       const declaredCookie = browserCookie(connection, 'harness.example')
       for (const method of methods) {

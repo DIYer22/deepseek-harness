@@ -11,7 +11,7 @@ import {
 } from './rpc.ts'
 import { clientRequestSchema } from './rpc-schema.ts'
 import { bridge } from './http-bridge.ts'
-import { isRemoteAuthority, isTrustedApiRequest } from './api-request-trust.ts'
+import { isRemoteAuthority } from './api-request-trust.ts'
 import { API_PATH } from './api-path.ts'
 import type { BrowserAuth } from './browser-auth.ts'
 import { Peer } from './peer.ts'
@@ -81,12 +81,12 @@ export class HostConnectionService extends Service implements HostConnectionHand
   /**
    * Provide the Host half over the active HTTP server.
    * @param ctx - owning Connection plugin context.
-   * @param trustedHosts - deployment authorities accepted by the Host/Origin fence.
+   * @param trustedHosts - declared deployment authorities; they only decide {@link allowsRemoteAuthorities}.
    * @param browserAuth - process token and persistent browser-session owner.
    */
   constructor(
     ctx: Context,
-    private readonly trustedHosts: readonly string[],
+    trustedHosts: readonly string[],
     private readonly browserAuth: BrowserAuth,
   ) {
     super(ctx, 'connection')
@@ -161,9 +161,14 @@ export class HostConnectionService extends Service implements HostConnectionHand
     }
   }
 
-  private isTrusted(request: ConnectionTrustRequest): boolean {
-    const carrier = this.owner.get('webServer')
-    return isTrustedApiRequest(request, this.trustedHosts, carrier?.host, carrier?.protocol ?? 'http:')
+  /**
+   * Host/Origin/Fetch-Metadata fence, disabled in this fork: any authority,
+   * Origin, or initiator may reach authentication, so LAN, port-forwarded, and
+   * proxied access need no `trustedHosts` entry. The login token and the
+   * authority-bound `SameSite=Strict` cookie it mints are the only gate.
+   */
+  private isTrusted(_request: ConnectionTrustRequest): boolean {
+    return true
   }
 
   private publishPeer(interactions: ConnectionInteractions): PeerId {

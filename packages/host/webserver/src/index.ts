@@ -96,13 +96,12 @@ export interface TlsConfig {
 /** Web server listen, TLS, and response-compression config. */
 export interface Config {
   /**
-   * Listen address: a concrete IPv4 or IPv6 literal of one local interface,
-   * for example the container's own Pod address from `hostname -i`. A loopback
-   * literal (any address in 127/8, `::1`, or a mapped form of either) keeps the
-   * server on this machine; any other literal serves the network that address
-   * belongs to, over plain HTTP unless `tls` is set. The unspecified address —
-   * IPv4 any, IPv6 any, and the IPv4-mapped forms of IPv4 any — is rejected at
-   * load: it would expose the port on every interface at once.
+   * Listen address: an IPv4 or IPv6 literal. A loopback literal (any address
+   * in 127/8, `::1`, or a mapped form of either) keeps the server on this
+   * machine; any other literal serves the network that address belongs to,
+   * over plain HTTP unless `tls` is set. The unspecified address (`0.0.0.0`,
+   * `::`) listens on every interface; browser access is then gated only by
+   * the Connection login token.
    */
   host: string
   /** Listen port; zero requests an OS-assigned port. */
@@ -223,12 +222,15 @@ export function normalizeBindAddress(host: string): string {
  * The URL host form of a bind address. Loopback addresses use their canonical
  * text, so browsers treat them as local, trustworthy origins: a mapped literal
  * such as `::ffff:127.0.0.1` reads as `127.0.0.1`, and `::0.0.0.1` reads as
- * `::1`. A redundant loopback zone is dropped; other addresses keep their text,
- * and IPv6 text is bracketed.
- * @param host - concrete IPv4 or IPv6 bind literal.
+ * `::1`. A wildcard bind reads as the loopback address of its family, which
+ * reaches the same listener from this machine. A redundant loopback zone is
+ * dropped; other addresses keep their text, and IPv6 text is bracketed.
+ * @param host - IPv4 or IPv6 bind literal.
  * @returns the URL host, or `undefined` when a non-loopback interface zone id makes the address inexpressible in a URL.
  */
 export function bindUrlHost(host: string): string | undefined {
+  const parsed = parseIpLiteral(host)
+  if (parsed !== undefined && isWildcardAddress(parsed)) return parsed instanceof ipaddr.IPv4 ? '127.0.0.1' : '[::1]'
   const zoneAt = host.indexOf('%')
   const bare = zoneAt === -1 ? host : host.slice(0, zoneAt)
   if (!isLoopbackHost(bare) && zoneAt !== -1) return undefined
@@ -357,11 +359,7 @@ async function writeResponse(res: ServerResponse, response: Response, head: bool
 export class WebServer extends Service {
   static Config: z<Config> = z.object({
     host: z.transform(z.string(), (value) => {
-      const parsed = parseIpLiteral(value)
-      if (parsed === undefined) throw notLiteralError(value)
-      if (isWildcardAddress(parsed)) {
-        throw new Error(`webserver: host ${JSON.stringify(value)} is an unspecified (wildcard) address, which is not supported: binding every interface would expose remote code execution to the network; bind one concrete IPv4 or IPv6 address of a local interface instead`)
-      }
+      if (parseIpLiteral(value) === undefined) throw notLiteralError(value)
       return value
     }).required(),
     port: z.natural().max(65535).required(),
@@ -407,7 +405,7 @@ export class WebServer extends Service {
     return this.listenedPort
   }
 
-  /** The configured bind address (one concrete local interface). */
+  /** The configured bind address (an IP literal, possibly the wildcard address). */
   get host(): Config['host'] {
     return this.config.host
   }

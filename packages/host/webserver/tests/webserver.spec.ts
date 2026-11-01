@@ -253,7 +253,7 @@ describe('real Loader composition', () => {
     }
   })
 
-  it('rejects every wildcard spelling by address value, not by text', () => {
+  it('accepts every wildcard spelling and rejects non-literals', () => {
     // Every spelling node:net accepts that parses to the unspecified address:
     // IPv4 any, IPv6 any in long and short forms, IPv4-compatible, and the
     // IPv4-mapped forms of IPv4 any, with or without a zone.
@@ -262,9 +262,7 @@ describe('real Loader composition', () => {
       '::ffff:0.0.0.0', '::ffff:0:0', '::ffff:0000:0000', '0:0:0:0:0:ffff:0:0',
       '0:0:0:0:0:ffff:0.0.0.0', '::ffff:0.0.0.0%eth0',
     ]) {
-      expect(() => HttpServer.Config({ host, port: 0 })).toThrow(
-        /is an unspecified \(wildcard\) address, which is not supported/,
-      )
+      expect(HttpServer.Config({ host, port: 0 }).host).toBe(host)
     }
     for (const host of ['localhost', 'example.com', '*', '[::]', '[fd00::1]', '10.1.2.3/8']) {
       expect(() => HttpServer.Config({ host, port: 0 }))
@@ -272,13 +270,12 @@ describe('real Loader composition', () => {
     }
   })
 
-  it('denies the IPv4-mapped wildcard through the real plugin load, not only the predicate', async () => {
-    // The Loader is nontransactional: a rejected config leaves a FAILED fiber
-    // whose await carries the schema error rather than rejecting loader.await().
-    const denied = await loadComposition(0, false, '::ffff:0.0.0.0')
-    const fiber = webserverFiber(denied)
-    expect(fiber?.state).toBe(FiberState.FAILED)
-    await expect(fiber?.await()).rejects.toThrow(/is an unspecified \(wildcard\) address/)
+  it('listens on the IPv4 wildcard through the real plugin load and advertises loopback', async () => {
+    const loaded = await loadComposition(0, false, '0.0.0.0')
+    expect(webserverFiber(loaded)?.state).toBe(FiberState.ACTIVE)
+    const server = loaded.webServer
+    expect(server.getOrigin()).toBe(`http://127.0.0.1:${String(server.port)}`)
+    expect((await request(server.port, '/missing')).status).toBe(404)
   })
 
   it('classifies loopback bind addresses from the parsed value, including mapped and zone forms', () => {
@@ -316,6 +313,11 @@ describe('real Loader composition', () => {
       ['::0.0.0.1%lo', '[::1]'],
       ['10.1.2.3', '10.1.2.3'],
       ['fd00::1', '[fd00::1]'],
+      // A wildcard bind is reached locally through the loopback address of its family.
+      ['0.0.0.0', '127.0.0.1'],
+      ['::ffff:0.0.0.0', '127.0.0.1'],
+      ['::', '[::1]'],
+      ['::%lo', '[::1]'],
       // A zone selects an interface and no URL can carry it; only a loopback zone is redundant.
       ['fe80::1%eth0', undefined],
       ['::127.0.0.1%lo', undefined],

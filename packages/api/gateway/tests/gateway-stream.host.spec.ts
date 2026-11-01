@@ -1623,7 +1623,7 @@ describe('Typert Remote streams', () => {
     socket.close()
   })
 
-  it('applies Connection trusted-host policy before accepting the Gateway socket', async () => {
+  it('requires authentication, not a trusted Host, before accepting the Gateway socket', async () => {
     const { ctx } = await setup(true)
     const socket = new WebSocket(
       `ws://127.0.0.1:${String(ctx.webServer.port)}/api/remote.mux`,
@@ -1634,7 +1634,7 @@ describe('Typert Remote streams', () => {
     const request = responseEvent[0]
     const response = responseEvent[1]
     const rejected = response as { statusCode?: number; resume(): void }
-    expect(rejected.statusCode).toBe(403)
+    expect(rejected.statusCode).toBe(401)
     rejected.resume()
     ;(request as { abort(): void }).abort()
   })

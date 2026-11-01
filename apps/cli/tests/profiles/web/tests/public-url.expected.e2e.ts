@@ -260,7 +260,7 @@ describe.skipIf(!builtArtifactsExist)('dsh Web profile bind address and advertis
           expect(await response.json()).toMatchObject({ result: { ok: true } })
         }
         const foreign = await request('http:', '127.0.0.1', proxy.port, `${MOUNT}api/session/create`, 'evil.example', 'POST')
-        expect(foreign.status).toBe(403)
+        expect(foreign.status).toBe(401)
         await foreign.arrayBuffer()
       } finally {
         await proxy.close()
@@ -269,7 +269,7 @@ describe.skipIf(!builtArtifactsExist)('dsh Web profile bind address and advertis
     })
   })
 
-  it.skipIf(NON_LOOPBACK_IPV4 === undefined)('serves the bound address and a declared authority, refusing any other name', async () => {
+  it.skipIf(NON_LOOPBACK_IPV4 === undefined)('serves the bound address and any other name, each with its own login cookie', async () => {
     const trustedHost = 'dsh-direct.example'
     await withWeb(['--host', NON_LOOPBACK_IPV4!, '--trusted-host', trustedHost], async (web) => {
       expect(web.startup.origin).toBe(`http://${NON_LOOPBACK_IPV4!}:${String(web.port)}`)
@@ -284,15 +284,15 @@ describe.skipIf(!builtArtifactsExist)('dsh Web profile bind address and advertis
       expect(authenticated.status).toBe(200)
       expect(await authenticated.json()).toMatchObject({ result: { ok: true } })
 
-      // A declared authority is admitted without being advertised; any other
-      // name for the same socket is a rebound Host.
+      // Every name for the socket reaches authentication; a cookie minted for
+      // one authority does not authenticate another.
       const declared = `${trustedHost}:${String(web.port)}`
       const declaredSession = await exchange('http:', NON_LOOPBACK_IPV4!, web.port, `/${web.startup.search}`, declared)
       const viaDeclared = await request('http:', NON_LOOPBACK_IPV4!, web.port, '/api/session/create', declared, 'POST', declaredSession.cookie)
       expect(viaDeclared.status).toBe(200)
       await viaDeclared.arrayBuffer()
       const rebound = await request('http:', NON_LOOPBACK_IPV4!, web.port, '/api/session/create', `evil.example:${String(web.port)}`, 'POST', cookie)
-      expect(rebound.status).toBe(403)
+      expect(rebound.status).toBe(401)
       await rebound.arrayBuffer()
 
       const stopped = await web.stop()

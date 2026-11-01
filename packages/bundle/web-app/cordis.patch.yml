@@ -171,12 +171,13 @@
     # by the web-runtime row below through the fallback seat. Routing and
     # browser-facing asset paths do not depend on the advertised URL, which the
     # web-runtime row owns; Connection reads trust authorities from webStartup.
-    # This row rejects wildcard binds.
+    # The default bind is every interface (0.0.0.0); the Connection login token
+    # is the only access gate.
     - id: webserver
       name: '@deepseek-ai/dsh-host-webserver'
       inject: [webStartup]
       config:
-        host: !!js ctx.webStartup.host ?? '127.0.0.1'
+        host: !!js ctx.webStartup.host ?? '0.0.0.0'
         port: !!js ctx.webStartup.port ?? 3080
         tls: !!js ctx.webStartup.tls
         compression: gzip
@@ -225,8 +226,9 @@
 
     # Owns both ends of the web transport: node half binds the gateway to the
     # webserver under /api; browser half is the fetch/SSE client. Every API
-    # request and upgrade passes the loopback, listener-bind, or trustedHosts
-    # policy; an advertised public URL contributes nothing to it.
+    # request and upgrade requires the login-token cookie; Host, Origin, and
+    # Fetch-Metadata are not checked. trustedHosts only marks remote access
+    # for the directory picker.
     - id: connection
       name: '@deepseek-ai/dsh-client-connection'
       inject: [webStartup]
